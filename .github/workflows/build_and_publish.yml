@@ -7,7 +7,7 @@ env:
   PYTHONUNBUFFERED: "1"
   ETH_RPC_URL: "https://cloudflare-eth.com"
   ETH_PRICE_SOURCE: "coingecko"
-  ETH_PRICE_USD: "4000"
+  ETH_PRICE_USD: "3000"
   TOKENS_JSON: ""
   SIGNING_KEY_PATH: ""  # set via repo secret if you want CI to sign
 
@@ -21,7 +21,8 @@ jobs:
         shard: [1,2,3,4,5,6,7,8,9,10]
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
+        with:
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -40,19 +41,19 @@ jobs:
             python scripts/harvest_candidates.py --out data/raw/candidates.csv --lookback-blocks 18000 --concurrency 8
           fi
           python - <<'PY'
-import pandas as pd, math, os
-if not os.path.exists('data/raw/candidates.csv'):
-    print('No candidates')
-    open('data/raw/candidates.csv','w').write('address\n')
-df = pd.read_csv('data/raw/candidates.csv')
-n = len(df)
-parts = 10
-rows = math.ceil(n/parts) if n>0 else 0
-for i in range(parts):
-    s = df.iloc[i*rows:(i+1)*rows] if rows>0 else df.iloc[0:0]
-    s.to_csv(f'data/shards/shard_{i+1:02d}.csv', index=False)
-print('split into', parts, 'shards')
-PY
+          import pandas as pd, math, os
+          if not os.path.exists('data/raw/candidates.csv'):
+              print('No candidates')
+              open('data/raw/candidates.csv','w').write('address\n')
+          df = pd.read_csv('data/raw/candidates.csv')
+          n = len(df)
+          parts = 10
+          rows = math.ceil(n/parts) if n>0 else 0
+          for i in range(parts):
+              s = df.iloc[i*rows:(i+1)*rows] if rows>0 else df.iloc[0:0]
+              s.to_csv(f'data/shards/shard_{i+1:02d}.csv', index=False)
+          print('split into', parts, 'shards')
+          PY
           ls -lh data/shards
 
       - name: Run pipeline (shard)
@@ -78,7 +79,8 @@ PY
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
+        with:
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -98,29 +100,29 @@ PY
       - name: Merge shards and produce final top10k
         run: |
           python - <<'PY'
-import pandas as pd, glob, os
-os.makedirs('data/run_final/delivery', exist_ok=True)
-paths = sorted(glob.glob('artifacts/**/top10k_whales_raw.csv', recursive=True))
-dfs=[]
-for p in paths:
-    try: dfs.append(pd.read_csv(p))
-    except: pass
-if not dfs:
-    paths = sorted(glob.glob('artifacts/**/balances_with_usd.csv', recursive=True))
-    for p in paths:
-        try: dfs.append(pd.read_csv(p))
-        except: pass
-if not dfs:
-    raise SystemExit('No shard outputs')
-full = pd.concat(dfs, ignore_index=True).drop_duplicates(subset=['address']).reset_index(drop=True)
-full.to_csv('data/run_final/merged.csv', index=False)
-if 'usd_value' in full.columns:
-    top = full.sort_values('usd_value', ascending=False).head(10000)
-else:
-    top = full.head(10000)
-top.to_csv('data/run_final/top10k_whales_raw.csv', index=False)
-print('Final top10k rows:', len(top))
-PY
+          import pandas as pd, glob, os
+          os.makedirs('data/run_final/delivery', exist_ok=True)
+          paths = sorted(glob.glob('artifacts/**/top10k_whales_raw.csv', recursive=True))
+          dfs=[]
+          for p in paths:
+              try: dfs.append(pd.read_csv(p))
+              except: pass
+          if not dfs:
+              paths = sorted(glob.glob('artifacts/**/balances_with_usd.csv', recursive=True))
+              for p in paths:
+                  try: dfs.append(pd.read_csv(p))
+                  except: pass
+          if not dfs:
+              raise SystemExit('No shard outputs')
+          full = pd.concat(dfs, ignore_index=True).drop_duplicates(subset=['address']).reset_index(drop=True)
+          full.to_csv('data/run_final/merged.csv', index=False)
+          if 'usd_value' in full.columns:
+              top = full.sort_values('usd_value', ascending=False).head(10000)
+          else:
+              top = full.head(10000)
+          top.to_csv('data/run_final/top10k_whales_raw.csv', index=False)
+          print('Final top10k rows:', len(top))
+          PY
 
       - name: Compute merkle & sample & sign & package
         run: |
@@ -128,15 +130,15 @@ PY
           python scripts/proof_and_sample.py --dataset data/run_final/top10k_whales_raw.csv --out data/run_final/delivery --sample-size 100 ${SIGNING_KEY_PATH:+--privkey ${SIGNING_KEY_PATH}}
           if [ -f data/run_final/delivery/merkle_root.txt ] && [ -n "$SIGNING_KEY_PATH" ]; then
             python - <<'PY'
-from pathlib import Path
-from cryptography.hazmat.primitives import serialization
-priv = Path('${SIGNING_KEY_PATH}').read_bytes()
-sk = serialization.load_pem_private_key(priv, password=None)
-mr = Path('data/run_final/delivery/merkle_root.txt').read_bytes()
-sig = sk.sign(mr)
-Path('data/run_final/delivery/merkle_root.sig').write_bytes(sig)
-print('Signed merkle_root')
-PY
+            from pathlib import Path
+            from cryptography.hazmat.primitives import serialization
+            priv = Path('${SIGNING_KEY_PATH}').read_bytes()
+            sk = serialization.load_pem_private_key(priv, password=None)
+            mr = Path('data/run_final/delivery/merkle_root.txt').read_bytes()
+            sig = sk.sign(mr)
+            Path('data/run_final/delivery/merkle_root.sig').write_bytes(sig)
+            print('Signed merkle_root')
+            PY
           fi
           rm -f data/run_final/delivery/ed25519_private.pem || true
           mkdir -p data/run_final/delivery/scripts data/run_final/delivery/docs

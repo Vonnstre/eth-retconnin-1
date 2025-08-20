@@ -21,14 +21,14 @@ ETH_RPC_URL = os.getenv("ETH_RPC_URL", "https://cloudflare-eth.com")
 TOKENS_JSON = os.getenv("TOKENS_JSON", "") or ""
 ETH_PRICE_SOURCE = os.getenv("ETH_PRICE_SOURCE", "coingecko")
 ETH_PRICE_USD_MANUAL = float(os.getenv("ETH_PRICE_USD", "3000"))
-SIGNING_KEY_PATH = os.getenv("SIGNING_KEY_PATH", "")
 
 DEFAULT_TOKENS = {
     "USDC": {"address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "decimals": 6, "usd": 1},
     "USDT": {"address": "0xdAC17F958D2ee523a2206206994597C13D831ec7", "decimals": 6, "usd": 1},
     "WETH": {"address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", "decimals": 18, "peg": "ETH"},
-    "WBTC": {"address": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599", "decimals": 8, "coingecko_id": "wrapped-bitcoin"}
+    "WBTC": {"address": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599", "decimals": 8, "coingecko_id": "wrapped-bitcoin"},
 }
+
 
 def load_tokens():
     try:
@@ -41,9 +41,14 @@ def load_tokens():
 
 
 def fetch_prices_coingecko(ids):
-    if not ids: return {}
+    if not ids:
+        return {}
     try:
-        r = requests.get("https://api.coingecko.com/api/v3/simple/price", params={"ids": ",".join(ids), "vs_currencies": "usd"}, timeout=10)
+        r = requests.get(
+            "https://api.coingecko.com/api/v3/simple/price",
+            params={"ids": ",".join(ids), "vs_currencies": "usd"},
+            timeout=10,
+        )
         r.raise_for_status()
         return r.json()
     except Exception:
@@ -96,7 +101,7 @@ def compute_usd(df, token_meta, eth_usd, btc_usd):
     df["token_portfolio_usd"] = df[token_usd_cols].sum(axis=1) if token_usd_cols else 0.0
     df["stablecoin_usd"] = df.get("token_USDC_usd", 0) + df.get("token_USDT_usd", 0)
     df["usd_value"] = (df["usd_eth_only"] + df["token_portfolio_usd"]).round(2)
-    df["stablecoin_pct"] = (df["stablecoin_usd"] / df["usd_value"]).replace([float('inf')], 0).fillna(0).clip(0, 1)
+    df["stablecoin_pct"] = (df["stablecoin_usd"] / df["usd_value"]).replace([float("inf")], 0).fillna(0).clip(0, 1)
     return df
 
 
@@ -116,7 +121,8 @@ async def batch_eth_getBalance(pool: RpcPool, addrs, batch=150):
                 res = it.get("result")
                 addr = chunk[idx]
                 v = int(res, 16) if res else 0
-                balances[addr] = float(Web3.toWei(0, 'ether') if v == 0 else Web3.fromWei(v, 'ether'))
+                # Web3 conversions: when using Web3.fromWei, ensure float result
+                balances[addr] = float(Web3.fromWei(v, "ether")) if v else 0.0
             except Exception:
                 pass
     return balances
@@ -126,7 +132,7 @@ def read_candidates(path):
     if not Path(path).exists():
         return []
     df = pd.read_csv(path, dtype=str)
-    col = 'address' if 'address' in df.columns else df.columns[0]
+    col = "address" if "address" in df.columns else df.columns[0]
     addrs = df[col].astype(str).tolist()
     out = []
     for a in addrs:
@@ -137,8 +143,18 @@ def read_candidates(path):
     return list(dict.fromkeys(out))
 
 
-def run_pipeline(input_csv, out_dir, usd_threshold=10000, top_n_multicall=12000, eth_conc=12, eth_batch=120, token_conc=8, token_batch=120):
-    out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
+def run_pipeline(
+    input_csv,
+    out_dir,
+    usd_threshold=10000,
+    top_n_multicall=3000,  # lowered default to be safer for public RPCs
+    eth_conc=12,
+    eth_batch=120,
+    token_conc=14,
+    token_batch=500,
+):
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
     if not Path(input_csv).exists():
         print("No candidate file found; aborting shard run")
         return out
@@ -167,7 +183,8 @@ def run_pipeline(input_csv, out_dir, usd_threshold=10000, top_n_multicall=12000,
 
     token_meta = load_tokens()
     prices = get_market_prices(token_meta)
-    eth_usd = prices["eth"]; btc_usd = prices["btc"]
+    eth_usd = prices["eth"]
+    btc_usd = prices["btc"]
 
     df = compute_usd(df, token_meta, eth_usd, btc_usd)
 
@@ -175,14 +192,15 @@ def run_pipeline(input_csv, out_dir, usd_threshold=10000, top_n_multicall=12000,
     enrich_targets = df.sort_values("usd_value", ascending=False).head(min(top_n_multicall, len(df)))["address"].tolist()
     token_tmp = out / "tmp_token_balances.csv"
     token_tmp.parent.mkdir(parents=True, exist_ok=True)
-    # fetch_token_balances will create and close its own RpcPool internally
+
+    # fetch_token_balances now uses multicall; batch controls addresses per multicall
     asyncio.run(fetch_token_balances(enrich_targets, token_meta, str(token_tmp), concurrency=token_conc, batch=token_batch))
 
     if token_tmp.exists():
         tdf = pd.read_csv(token_tmp, dtype=str)
         for c in tdf.columns:
             if c != "address":
-                tdf[c] = pd.to_numeric(tdf[c], errors='coerce').fillna(0)
+                tdf[c] = pd.to_numeric(tdf[c], errors="coerce").fillna(0)
         df = df.merge(tdf, on="address", how="left").fillna(0)
         df = compute_usd(df, token_meta, eth_usd, btc_usd)
 
@@ -194,35 +212,25 @@ def run_pipeline(input_csv, out_dir, usd_threshold=10000, top_n_multicall=12000,
     (out / "top10k_whales_raw.csv").write_text(top_final.to_csv(index=False))
     print("Top rows in shard:", len(top_final))
 
-    delivery_dir = out / "delivery"; delivery_dir.mkdir(parents=True, exist_ok=True)
+    delivery_dir = out / "delivery"
+    delivery_dir.mkdir(parents=True, exist_ok=True)
 
     compute_merkle(Path(out / "top10k_whales_raw.csv"), delivery_dir, sample_indices=list(range(0, min(20, len(top_final)))))
 
-    # call proof_and_sample (it will write public key and manifest; pass signing key if provided)
-    if SIGNING_KEY_PATH:
-        os.system(f"python scripts/proof_and_sample.py --dataset {out/'top10k_whales_raw.csv'} --out {delivery_dir} --sample-size 100 --privkey {SIGNING_KEY_PATH}")
-    else:
-        os.system(f"python scripts/proof_and_sample.py --dataset {out/'top10k_whales_raw.csv'} --out {delivery_dir} --sample-size 100")
+    # Call proof_and_sample (it will write public key and manifest; ephemeral key if none provided)
+    os.system(f"python scripts/proof_and_sample.py --dataset {out/'top10k_whales_raw.csv'} --out {delivery_dir} --sample-size 100")
 
-    # sign merkle_root.txt with signing key if provided (do not write private key into delivery)
-    mr = delivery_dir / 'merkle_root.txt'
-    if SIGNING_KEY_PATH and mr.exists():
-        try:
-            from cryptography.hazmat.primitives import serialization
-            priv_bytes = Path(SIGNING_KEY_PATH).read_bytes()
-            sk = serialization.load_pem_private_key(priv_bytes, password=None)
-            sig = sk.sign(mr.read_bytes())
-            (delivery_dir / 'merkle_root.sig').write_bytes(sig)
-        except Exception as e:
-            print("Failed signing merkle root:", e)
-
-    # copy verifier script and docs
-    shutil.copy("scripts/buyer_verifier.sh", delivery_dir / "scripts/buyer_verifier.sh")
+    # Do NOT sign merkle root with a long-lived private key in CI by default (removed)
+    # Copy helper script and docs
+    try:
+        shutil.copy("scripts/buyer_verifier.sh", delivery_dir / "scripts/buyer_verifier.sh")
+    except Exception:
+        pass
     if Path("docs/DELIVERY_README.md").exists():
         (delivery_dir / "docs").mkdir(exist_ok=True)
         shutil.copy("docs/DELIVERY_README.md", delivery_dir / "docs/DELIVERY_README.md")
 
-    # create zip
+    # package zip
     zname = delivery_dir / f"Top10k_Delivery_{int(time.time())}.zip"
     with zipfile.ZipFile(zname, "w", zipfile.ZIP_DEFLATED) as z:
         for p in delivery_dir.rglob("*"):
@@ -231,15 +239,16 @@ def run_pipeline(input_csv, out_dir, usd_threshold=10000, top_n_multicall=12000,
     print("Wrote", zname)
     return delivery_dir
 
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", default="data/raw/candidates.csv")
     ap.add_argument("--out", default="data/run_shard")
     ap.add_argument("--usd-threshold", type=int, default=10000)
-    ap.add_argument("--top-n-multicall", type=int, default=12000)
+    ap.add_argument("--top-n-multicall", type=int, default=3000)
     ap.add_argument("--eth-conc", type=int, default=12)
     ap.add_argument("--eth-batch", type=int, default=120)
-    ap.add_argument("--token-conc", type=int, default=8)
-    ap.add_argument("--token-batch", type=int, default=120)
+    ap.add_argument("--token-conc", type=int, default=14)
+    ap.add_argument("--token-batch", type=int, default=500)
     a = ap.parse_args()
     run_pipeline(a.input, a.out, a.usd_threshold, a.top_n_multicall, a.eth_conc, a.eth_batch, a.token_conc, a.token_batch)

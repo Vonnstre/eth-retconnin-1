@@ -1,4 +1,7 @@
-# bulletproof_pipeline.py
+"""Main shard pipeline (CI-friendly)
+Run as module from repo root:
+python -m scripts.bulletproof_pipeline --input data/raw/candidates.csv --out data/run_shard
+"""
 import argparse
 import asyncio
 import json
@@ -8,16 +11,15 @@ import zipfile
 import shutil
 from pathlib import Path
 import pandas as pd
-import requests
 from web3 import Web3
-from scripts.utils_eth import RpcPool, chunk_list
-from scripts.token_multicall_simple import fetch_token_balances
-from scripts.lead_score import compute_lead_score
-from scripts.exchange_detect import detect_exchange_inflow, load_exchange_set
-from scripts.merkle_proofs import compute_merkle
+
+from .utils_eth import RpcPool, chunk_list
+from .token_multicall_simple import fetch_token_balances
+from .lead_score import compute_lead_score
+from .exchange_detect import detect_exchange_inflow, load_exchange_set
+from .merkle_proofs import compute_merkle
 
 # env/config
-ETH_RPC_URL = os.getenv("ETH_RPC_URL", "https://cloudflare-eth.com")
 TOKENS_JSON = os.getenv("TOKENS_JSON", "") or ""
 ETH_PRICE_SOURCE = os.getenv("ETH_PRICE_SOURCE", "coingecko")
 ETH_PRICE_USD_MANUAL = float(os.getenv("ETH_PRICE_USD", "3000"))
@@ -44,6 +46,7 @@ def fetch_prices_coingecko(ids):
     if not ids:
         return {}
     try:
+        import requests
         r = requests.get(
             "https://api.coingecko.com/api/v3/simple/price",
             params={"ids": ",".join(ids), "vs_currencies": "usd"},
@@ -107,8 +110,13 @@ def compute_usd(df, token_meta, eth_usd, btc_usd):
 
 async def batch_eth_getBalance(pool: RpcPool, addrs, batch=150):
     balances = {}
+    if not addrs:
+        return balances
     for chunk in chunk_list(addrs, batch):
-        payload = [{"jsonrpc": "2.0", "id": i, "method": "eth_getBalance", "params": [a, "latest"]} for i, a in enumerate(chunk)]
+        payload = [
+            {"jsonrpc": "2.0", "id": i, "method": "eth_getBalance", "params": [a, "latest"]}
+            for i, a in enumerate(chunk)
+        ]
         ok, resp = await pool.post(payload, timeout=60)
         if not ok:
             for a in chunk:
@@ -121,7 +129,6 @@ async def batch_eth_getBalance(pool: RpcPool, addrs, batch=150):
                 res = it.get("result")
                 addr = chunk[idx]
                 v = int(res, 16) if res else 0
-                # Web3 conversions: when using Web3.fromWei, ensure float result
                 balances[addr] = float(Web3.fromWei(v, "ether")) if v else 0.0
             except Exception:
                 pass
@@ -147,7 +154,7 @@ def run_pipeline(
     input_csv,
     out_dir,
     usd_threshold=10000,
-    top_n_multicall=3000,  # lowered default to be safer for public RPCs
+    top_n_multicall=3000,
     eth_conc=12,
     eth_batch=120,
     token_conc=14,
@@ -189,11 +196,11 @@ def run_pipeline(
     df = compute_usd(df, token_meta, eth_usd, btc_usd)
 
     # enrich top N for token balances
-    enrich_targets = df.sort_values("usd_value", ascending=False).head(min(top_n_multicall, len(df)))["address"].tolist()
+    enrich_targets = df.sort_values("usd_value", ascending=False).head(min(top_n_multicall, len(df)))
+    enrich_targets = enrich_targets["address"].tolist()
     token_tmp = out / "tmp_token_balances.csv"
     token_tmp.parent.mkdir(parents=True, exist_ok=True)
 
-    # fetch_token_balances now uses multicall; batch controls addresses per multicall
     asyncio.run(fetch_token_balances(enrich_targets, token_meta, str(token_tmp), concurrency=token_conc, batch=token_batch))
 
     if token_tmp.exists():
@@ -217,20 +224,17 @@ def run_pipeline(
 
     compute_merkle(Path(out / "top10k_whales_raw.csv"), delivery_dir, sample_indices=list(range(0, min(20, len(top_final)))))
 
-    # Call proof_and_sample (it will write public key and manifest; ephemeral key if none provided)
-    os.system(f"python scripts/proof_and_sample.py --dataset {out/'top10k_whales_raw.csv'} --out {delivery_dir} --sample-size 100")
+    # Call proof_and_sample as module-run (safe)
+    os.system(f"python -m scripts.proof_and_sample --dataset {out/'top10k_whales_raw.csv'} --out {delivery_dir} --sample-size 100")
 
-    # Do NOT sign merkle root with a long-lived private key in CI by default (removed)
-    # Copy helper script and docs
     try:
-        shutil.copy("scripts/buyer_verifier.sh", delivery_dir / "scripts/buyer_verifier.sh")
+        shutil.copy("scripts/buyer_verifier.sh", delivery_dir / "buyer_verifier.sh")
     except Exception:
         pass
     if Path("docs/DELIVERY_README.md").exists():
         (delivery_dir / "docs").mkdir(exist_ok=True)
         shutil.copy("docs/DELIVERY_README.md", delivery_dir / "docs/DELIVERY_README.md")
 
-    # package zip
     zname = delivery_dir / f"Top10k_Delivery_{int(time.time())}.zip"
     with zipfile.ZipFile(zname, "w", zipfile.ZIP_DEFLATED) as z:
         for p in delivery_dir.rglob("*"):

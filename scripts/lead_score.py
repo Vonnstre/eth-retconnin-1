@@ -1,16 +1,24 @@
-# lead_score.py
 import pandas as pd
+import math
 
 def compute_lead_score(df: pd.DataFrame) -> pd.DataFrame:
-    """Simple, transparent scoring: scale USD, penalize stablecoin-only, and exchanges.
-    Columns required: usd_value, stablecoin_pct, exchange_deposit_flag (bool/int)
-    """
     d = df.copy()
     usd = d['usd_value'].fillna(0).astype(float)
-    stable_pen = (1.0 - d.get('stablecoin_pct', 0).fillna(0)).clip(0, 1)
-    ex_pen = (1 - d.get('exchange_deposit_flag', 0).astype(int))  # 0 if exchange, 1 otherwise
-    # Scale: log to compress, then 0..100
-    score = (usd.apply(lambda x: 0 if x <= 0 else min(1.0, (__import__('math').log10(x) / 6.0))) * 70
+    stable_pct = d.get('stablecoin_pct', 0)
+    if not hasattr(stable_pct, 'fillna'):
+        stable_pct = pd.Series([stable_pct] * len(d))
+    stable_pen = (1.0 - stable_pct.fillna(0)).clip(0, 1)
+    ex_pen = (1 - d.get('exchange_deposit_flag', 0).astype(int))
+
+    def log_scale(x):
+        try:
+            if x <= 0:
+                return 0.0
+            return min(1.0, math.log10(x) / 6.0)
+        except Exception:
+            return 0.0
+
+    score = (usd.apply(log_scale) * 70
              + stable_pen * 20
              + ex_pen * 10)
     d['lead_score'] = score.round(1)

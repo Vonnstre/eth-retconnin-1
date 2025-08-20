@@ -1,19 +1,21 @@
-# merkle_proofs.py
 from pathlib import Path
 import hashlib
 import json
 import argparse
 import csv
 
+
 def canonical_row_bytes(row):
-    # Row fields joined with ASCII Unit Separator to avoid ambiguity
     return ('\x1f'.join([str(c) if c is not None else '' for c in row])).encode('utf-8')
+
 
 def Hleaf(b: bytes) -> bytes:
     return hashlib.sha256(b'\x00' + b).digest()
 
+
 def Hnode(a: bytes, b: bytes) -> bytes:
     return hashlib.sha256(b'\x01' + a + b).digest()
+
 
 class MerkleTree:
     def __init__(self, leaves):
@@ -37,7 +39,6 @@ class MerkleTree:
         return self.layers[-1][0]
 
     def proof(self, idx):
-        """Return list of {"hash": <hex>, "is_left": <bool>} where is_left indicates sibling sits left of current node."""
         proof = []
         cur = idx
         for layer in self.layers[:-1]:
@@ -47,7 +48,6 @@ class MerkleTree:
                 is_left = (pair % 2 == 0)
                 proof.append({"hash": sib.hex(), "is_left": is_left})
             else:
-                # odd last node duplicated
                 proof.append({"hash": layer[cur].hex(), "is_left": False})
             cur //= 2
         return proof
@@ -76,6 +76,7 @@ def compute_merkle(csv_path: Path, out_dir: Path, sample_indices):
             }
             (proofs_dir / f'sample_row_{idx}.json').write_text(json.dumps(p, indent=2))
     return mt.root().hex()
+
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()

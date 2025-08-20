@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-# utils_eth.py
+# lightweight RPC pool (async) with retries and rotation across free public endpoints
 import os
 import asyncio
 import aiohttp
@@ -8,21 +7,20 @@ import json
 from contextlib import asynccontextmanager
 from typing import Iterator, List, Tuple, Union, Optional
 
-# --- FREE public RPCs (rotated automatically). No keys. ---
-# Ordered by typical reliability; feel free to add/remove.
 FREE_RPC_FALLBACKS: List[str] = [
     "https://cloudflare-eth.com",
-    "https://ethereum.publicnode.com",
+    "https://ethereum-rpc.publicnode.com",
     "https://rpc.ankr.com/eth",
-    "https://eth-mainnet.public.blastapi.io",
     "https://eth.public-rpc.com",
     "https://1rpc.io/eth",
 ]
+
 
 def _parse_urls(urls: Optional[Union[str, List[str]]]) -> List[str]:
     if isinstance(urls, str):
         return [u.strip() for u in urls.split(",") if u.strip()]
     return [u.strip() for u in (urls or []) if u.strip()]
+
 
 class RpcPool:
     """
@@ -93,7 +91,6 @@ class RpcPool:
                             except Exception:
                                 return False, {"error": "invalid_json", "text": text[:400]}
                             if isinstance(data, dict) and "error" in data:
-                                # Some nodes return JSON-RPC error bodies
                                 last_err = f"rpc_error {url}: {data['error']}"
                                 await asyncio.sleep(min(8, 0.4 * attempt))
                                 continue
@@ -111,7 +108,7 @@ class RpcPool:
                 pass
 
 
-def chunk_list(xs: List, n: int) -> Iterator[List]:
+def chunk_list(xs: List, n: int):
     if n <= 0 or n >= len(xs):
         yield xs
         return

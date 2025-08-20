@@ -48,7 +48,6 @@ from pathlib import Path
 p = json.load(open("$proof"))
 row = p['row']
 root_expected = Path("$mr").read_text().strip()
-# Leaf: 0x00 || US separator-joined row
 leaf_bytes = ('\x1f'.join([str(x) for x in row])).encode()
 leaf = hashlib.sha256(b'\x00' + leaf_bytes).digest()
 cur = leaf

@@ -4,10 +4,10 @@ import math
 from pathlib import Path
 import pandas as pd
 
+
 def split(input_path: Path, parts: int, outdir: Path):
     outdir.mkdir(parents=True, exist_ok=True)
 
-    # ✅ Proper safe load
     if input_path.exists() and input_path.stat().st_size > 0:
         df = pd.read_csv(input_path)
     else:
@@ -22,6 +22,7 @@ def split(input_path: Path, parts: int, outdir: Path):
         s.to_csv(outdir / f"shard_{i+1:02d}.csv", index=False)
 
     print(f"Split {n} rows into {parts} shard(s) at {outdir}")
+
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()

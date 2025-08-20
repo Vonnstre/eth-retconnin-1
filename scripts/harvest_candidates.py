@@ -1,32 +1,23 @@
-#!/usr/bin/env python3
-# harvest_candidates.py
+"""Harvest recent addresses from block transactions within a lookback window.
+Run as: python -m scripts.harvest_candidates --out data/raw/candidates.csv
 """
-Robust candidate harvester (no API keys).
-
-- Rotates across several free public RPCs (see utils_eth.FREE_RPC_FALLBACKS).
-- Tries batched eth_getBlockByNumber first; falls back to single calls.
-- Graceful: if latest block cannot be determined, writes an empty CSV and exits 0.
-"""
-
 import argparse
 import asyncio
 import os
 import sys
 from pathlib import Path
 from typing import List, Optional
-
 import pandas as pd
 
-# ensure local imports
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.utils_eth import RpcPool, chunk_list
+from .utils_eth import RpcPool, chunk_list
 
 DEFAULT_LOOKBACK = int(os.getenv("HARVEST_LOOKBACK", "18000"))
 DEFAULT_CONCURRENCY = 8
 DEFAULT_BATCH = 120
-PAUSE_BETWEEN_BATCHES = 0.05  # seconds
+PAUSE_BETWEEN_BATCHES = 0.05
 BATCH_RPC_TIMEOUT = 60
 SINGLE_RPC_TIMEOUT = 20
 BATCH_RETRIES = 3
@@ -37,7 +28,6 @@ async def _fetch_latest_block(pool: RpcPool) -> Optional[int]:
     for attempt in range(1, 6):
         ok, br = await pool.post({"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []}, timeout=12)
         if ok:
-            # Nodes may respond with {"result": "0x..."} or raw "0x..."
             if isinstance(br, dict) and "result" in br:
                 try:
                     return int(br["result"], 16)
@@ -72,10 +62,7 @@ async def _fetch_batch_blocks(pool: RpcPool, blocks: List[int]):
 
 
 async def _fetch_block_single(pool: RpcPool, n: int):
-    ok, resp = await pool.post(
-        {"jsonrpc": "2.0", "id": n, "method": "eth_getBlockByNumber", "params": [hex(n), True]},
-        timeout=SINGLE_RPC_TIMEOUT,
-    )
+    ok, resp = await pool.post({"jsonrpc": "2.0", "id": n, "method": "eth_getBlockByNumber", "params": [hex(n), True]}, timeout=SINGLE_RPC_TIMEOUT)
     if not ok:
         return None
     if isinstance(resp, dict):
@@ -104,7 +91,7 @@ async def main_async(out="data/raw/candidates.csv",
         if latest is None:
             print("ERROR: unable to determine latest block from RPC after retries. Writing empty candidates file and exiting.")
             Path(out).write_text("address\n")
-            return  # exit 0
+            return
 
         start = max(1, latest - int(lookback_blocks))
         total_blocks = latest - start + 1
@@ -115,7 +102,6 @@ async def main_async(out="data/raw/candidates.csv",
         consecutive_batch_failures = 0
 
         for batch in chunk_list(list(range(start, latest + 1)), batch_size):
-            # Try batch first
             batch_res = None
             for _ in range(BATCH_RETRIES):
                 batch_res = await _fetch_batch_blocks(pool, batch)
@@ -124,7 +110,6 @@ async def main_async(out="data/raw/candidates.csv",
                 await asyncio.sleep(0.8)
 
             if batch_res is None:
-                # Fallback: per-block (in parallel, limited by pool.sem)
                 consecutive_batch_failures += 1
                 tasks = [_fetch_block_with_retries(pool, b) for b in batch]
                 res = await asyncio.gather(*tasks, return_exceptions=True)
@@ -132,7 +117,6 @@ async def main_async(out="data/raw/candidates.csv",
                 consecutive_batch_failures = 0
                 res = batch_res
 
-            # Parse results
             for blk in res:
                 if isinstance(blk, Exception) or not blk:
                     continue
@@ -180,7 +164,6 @@ def main():
     except KeyboardInterrupt:
         print("Interrupted")
     except Exception as e:
-        # Be graceful in CI: emit message, ensure file exists, exit 0
         print("Harvest encountered error:", e)
         Path(a.out).parent.mkdir(parents=True, exist_ok=True)
         if not Path(a.out).exists():

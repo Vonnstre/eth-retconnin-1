@@ -10,7 +10,7 @@ from typing import Iterator, List, Union, Tuple
 DEFAULT_RPC = os.getenv("ETH_RPC_URL", "https://cloudflare-eth.com")
 
 class RpcPool:
-    """ Lightweight rotating RPC pool with retries and exponential backoff.
+    """Lightweight rotating RPC pool with retries and exponential backoff.
 
     `post` accepts a dict or a list (batch). Returns (ok: bool, data: dict|list|{'error':...})
     """
@@ -44,8 +44,8 @@ class RpcPool:
             pass
 
     async def post(self, payload, timeout: int | None = None) -> Tuple[bool, object]:
-        """ Accepts JSON-RPC single payload (dict) or batch payload (list).
-            Returns (ok, parsed_json_or_error).
+        """Accepts JSON-RPC single payload (dict) or batch payload (list).
+           Returns (ok, parsed_json_or_error).
         """
         timeout = timeout or self.timeout
         async with self.sem:

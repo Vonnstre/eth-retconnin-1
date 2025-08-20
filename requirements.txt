@@ -1,0 +1,9 @@
+aiohttp
+pandas
+python-dotenv
+web3
+pyarrow
+requests
+cryptography
+tqdm
+jinja2
